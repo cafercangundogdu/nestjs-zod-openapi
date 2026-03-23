@@ -1,0 +1,17 @@
+{
+  "name": "nestjs-zod-openapi-example",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Example app for @cafercangundogdu/nestjs-zod-openapi",
+  "scripts": {
+    "start": "ts-node src/main.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/swagger": "^11.0.0",
+    "reflect-metadata": "^0.2.0",
+    "rxjs": "^7.8.0",
+    "zod": "^4.0.0"
+  }
+}
