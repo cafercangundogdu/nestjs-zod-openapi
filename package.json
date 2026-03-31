@@ -1,6 +1,6 @@
 {
   "name": "@cafercangundogdu/nestjs-zod-openapi",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "NestJS + Zod 4 + OpenAPI — type-safe DTOs with discriminatedUnion oneOf support",
   "author": "Cafer Can Gundogdu",
   "license": "MIT",

@@ -4,8 +4,27 @@ import type { z } from 'zod';
 /**
  * Marker interface for classes created by `createZodDto`.
  */
+/**
+ * Resolves the instance type for `new ()`.
+ *
+ * TypeScript's `class X extends Base` requires Base's constructor return
+ * type to be "an object type with statically known members" — union types
+ * are rejected (TS2509).
+ *
+ * For z.object() schemas: `{ [K in keyof O]: O[K] }` preserves all typed
+ * properties (same as the original output type).
+ *
+ * For z.union() / z.discriminatedUnion(): the mapped type collapses the
+ * union to only the shared keys (e.g. `{ type: "a" | "b" }` for a
+ * discriminated union), which TypeScript accepts as an extends target.
+ */
+type DtoInstance<T extends z.ZodType> =
+  z.output<T> extends Record<string, unknown>
+    ? { [K in keyof z.output<T>]: z.output<T>[K] }
+    : object;
+
 export interface ZodDtoStatic<T extends z.ZodType = z.ZodType> {
-  new (): z.output<T>;
+  new (): DtoInstance<T>;
   schema: T;
   zodSchema: T;
   isZodDto: true;
