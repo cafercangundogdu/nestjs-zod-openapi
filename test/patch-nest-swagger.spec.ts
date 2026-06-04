@@ -1,6 +1,6 @@
 import 'reflect-metadata';
+import { dirname, join } from 'node:path';
 import { OpenAPIRegistry, OpenApiGeneratorV3 } from '@asteasolutions/zod-to-openapi';
-import { dirname, join } from 'path';
 import { z } from 'zod';
 import { createZodDto, patchNestSwagger } from '../src';
 

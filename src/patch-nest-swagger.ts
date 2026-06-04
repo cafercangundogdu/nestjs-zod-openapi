@@ -1,8 +1,8 @@
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { getRefId, OpenAPIRegistry, OpenApiGeneratorV3 } from '@asteasolutions/zod-to-openapi';
 import { INestApplication } from '@nestjs/common';
 import { SwaggerDocumentOptions } from '@nestjs/swagger';
-import { createRequire } from 'module';
-import { dirname, join } from 'path';
 
 export interface PatchNestSwaggerOptions {
   /**
@@ -66,7 +66,7 @@ export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
   // copy of @nestjs/swagger that differs from the one the NestJS app uses.
   // `createRequire` anchored at the app's entry point guarantees we patch the
   // same prototype instances that SwaggerModule will use at runtime.
-  const appRequire = createRequire(require.main?.filename ?? process.cwd() + '/package.json');
+  const appRequire = createRequire(require.main?.filename ?? `${process.cwd()}/package.json`);
   // Since @nestjs/swagger@11.4.3 the package ships a restrictive `exports` map that blocks deep
   // subpath imports (`@nestjs/swagger/dist/...`) under Node's native loader. The
   // `SchemaObjectFactory` / `SwaggerScanner` classes we patch are internal (not part of the

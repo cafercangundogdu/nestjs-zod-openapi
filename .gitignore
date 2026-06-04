@@ -8,3 +8,6 @@ coverage/
 !commitlint.config.js
 .env
 .DS_Store
+
+# npm pack / publish artifacts
+*.tgz
