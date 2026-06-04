@@ -2,6 +2,7 @@ import { getRefId, OpenAPIRegistry, OpenApiGeneratorV3 } from '@asteasolutions/z
 import { INestApplication } from '@nestjs/common';
 import { SwaggerDocumentOptions } from '@nestjs/swagger';
 import { createRequire } from 'module';
+import { dirname, join } from 'path';
 
 export interface PatchNestSwaggerOptions {
   /**
@@ -13,6 +14,31 @@ export interface PatchNestSwaggerOptions {
    * @default 'default'
    */
   schemasSort?: 'default' | 'alpha' | 'localeCompare';
+}
+
+// We monkey-patch `@nestjs/swagger` internals at runtime. To stay safe across
+// versions we (a) validate the patch targets exist before touching them, and
+// (b) stash the pristine originals under symbols so repeated calls re-bind a
+// fresh registry without growing a wrapper chain (HMR / multiple bootstraps).
+const ORIGINAL_EXPLORE_MODEL_SCHEMA = Symbol.for(
+  '@cafercangundogdu/nestjs-zod-openapi.originalExploreModelSchema',
+);
+const ORIGINAL_SCAN_APPLICATION = Symbol.for(
+  '@cafercangundogdu/nestjs-zod-openapi.originalScanApplication',
+);
+
+/** The range of `@nestjs/swagger` major versions this patch is verified against. */
+const SUPPORTED_SWAGGER_MAJORS = [11];
+
+function assertPatchTarget(condition: unknown, detail: string): asserts condition {
+  if (!condition) {
+    throw new Error(
+      `[nestjs-zod-openapi] Cannot patch @nestjs/swagger: ${detail}. ` +
+        'This usually means the installed @nestjs/swagger version is not supported ' +
+        `(verified majors: ${SUPPORTED_SWAGGER_MAJORS.join(', ')}). ` +
+        'Please open an issue at https://github.com/cafercangundogdu/nestjs-zod-openapi/issues.',
+    );
+  }
 }
 
 /**
@@ -41,10 +67,34 @@ export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
   // `createRequire` anchored at the app's entry point guarantees we patch the
   // same prototype instances that SwaggerModule will use at runtime.
   const appRequire = createRequire(require.main?.filename ?? process.cwd() + '/package.json');
-  const schemaObjectFactoryModule = appRequire(
-    '@nestjs/swagger/dist/services/schema-object-factory',
-  );
-  const swaggerScannerModule = appRequire('@nestjs/swagger/dist/swagger-scanner');
+  // Since @nestjs/swagger@11.4.3 the package ships a restrictive `exports` map that blocks deep
+  // subpath imports (`@nestjs/swagger/dist/...`) under Node's native loader. The
+  // `SchemaObjectFactory` / `SwaggerScanner` classes we patch are internal (not part of the
+  // public API), so we resolve the package root via its `package.json` (an allowed export) and
+  // require the internal files by absolute path — absolute paths bypass `exports` enforcement.
+  let swaggerRoot: string;
+  let schemaObjectFactoryModule: any;
+  let swaggerScannerModule: any;
+  try {
+    swaggerRoot = dirname(appRequire.resolve('@nestjs/swagger/package.json'));
+    schemaObjectFactoryModule = appRequire(
+      join(swaggerRoot, 'dist/services/schema-object-factory.js'),
+    );
+    swaggerScannerModule = appRequire(join(swaggerRoot, 'dist/swagger-scanner.js'));
+  } catch (cause) {
+    const error = new Error(
+      '[nestjs-zod-openapi] Failed to resolve @nestjs/swagger internals. Make sure ' +
+        '@nestjs/swagger is installed in your app and matches a supported major version ' +
+        `(${SUPPORTED_SWAGGER_MAJORS.join(', ')}).`,
+    );
+    (error as any).cause = cause;
+    throw error;
+  }
+
+  // Best-effort major-version check. We don't hard-fail on an unknown major (a future
+  // release may still be structurally compatible) — the structural assertions below are
+  // the real safety net — but we warn so surprises are diagnosable.
+  warnOnUnsupportedVersion(appRequire, swaggerRoot);
 
   const registry = new OpenAPIRegistry();
 
@@ -52,7 +102,22 @@ export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
   // 1. Override `exploreModelSchema`
   // -----------------------------------------------------------------------
   const SchemaObjectFactory = schemaObjectFactoryModule.SchemaObjectFactory;
-  const originalExploreModelSchema = SchemaObjectFactory.prototype.exploreModelSchema;
+  assertPatchTarget(
+    typeof SchemaObjectFactory === 'function',
+    'SchemaObjectFactory export not found in dist/services/schema-object-factory.js',
+  );
+  assertPatchTarget(
+    typeof SchemaObjectFactory.prototype.exploreModelSchema === 'function',
+    'SchemaObjectFactory.prototype.exploreModelSchema is not a function',
+  );
+
+  // Capture the pristine original ONCE (stashed under a symbol). On re-invocation we
+  // re-read the stash rather than the currently-installed function, so we never wrap our
+  // own patch — the chain stays one level deep no matter how many times this runs.
+  const originalExploreModelSchema: (...args: any[]) => string =
+    SchemaObjectFactory.prototype[ORIGINAL_EXPLORE_MODEL_SCHEMA] ??
+    SchemaObjectFactory.prototype.exploreModelSchema;
+  SchemaObjectFactory.prototype[ORIGINAL_EXPLORE_MODEL_SCHEMA] = originalExploreModelSchema;
 
   SchemaObjectFactory.prototype.exploreModelSchema = function patchedExploreModelSchema(
     this: any,
@@ -84,7 +149,18 @@ export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
   // 2. Override `scanApplication`
   // -----------------------------------------------------------------------
   const SwaggerScanner = swaggerScannerModule.SwaggerScanner;
-  const originalScanApplication = SwaggerScanner.prototype.scanApplication;
+  assertPatchTarget(
+    typeof SwaggerScanner === 'function',
+    'SwaggerScanner export not found in dist/swagger-scanner.js',
+  );
+  assertPatchTarget(
+    typeof SwaggerScanner.prototype.scanApplication === 'function',
+    'SwaggerScanner.prototype.scanApplication is not a function',
+  );
+
+  const originalScanApplication: (...args: any[]) => any =
+    SwaggerScanner.prototype[ORIGINAL_SCAN_APPLICATION] ?? SwaggerScanner.prototype.scanApplication;
+  SwaggerScanner.prototype[ORIGINAL_SCAN_APPLICATION] = originalScanApplication;
 
   SwaggerScanner.prototype.scanApplication = function patchedScanApplication(
     this: any,
@@ -130,6 +206,28 @@ export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Reads the installed `@nestjs/swagger` version and warns (once-ish, via console) when its
+ * major is outside the verified set. Never throws — resolution/parse failures are ignored so
+ * a missing `version` field can't break bootstrap.
+ */
+function warnOnUnsupportedVersion(appRequire: NodeRequire, swaggerRoot: string): void {
+  try {
+    const pkg = appRequire(join(swaggerRoot, 'package.json'));
+    const version: string | undefined = pkg?.version;
+    const major = version ? Number.parseInt(version.split('.')[0], 10) : NaN;
+    if (!Number.isNaN(major) && !SUPPORTED_SWAGGER_MAJORS.includes(major)) {
+      console.warn(
+        `[nestjs-zod-openapi] Installed @nestjs/swagger@${version} has an unverified major ` +
+          `version (verified: ${SUPPORTED_SWAGGER_MAJORS.join(', ')}). Patching will proceed, ` +
+          'but schema generation may behave unexpectedly.',
+      );
+    }
+  } catch {
+    // Version probe is best-effort; structural assertions guard correctness.
+  }
+}
 
 function sortSchemas(
   schemas: Record<string, any>,

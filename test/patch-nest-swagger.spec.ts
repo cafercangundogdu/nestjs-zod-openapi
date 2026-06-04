@@ -1,7 +1,17 @@
 import 'reflect-metadata';
 import { OpenAPIRegistry, OpenApiGeneratorV3 } from '@asteasolutions/zod-to-openapi';
+import { dirname, join } from 'path';
 import { z } from 'zod';
 import { createZodDto, patchNestSwagger } from '../src';
+
+// @nestjs/swagger@11.4.3+ blocks deep subpath imports via its `exports` map, and the internal
+// `SchemaObjectFactory` / `SwaggerScanner` classes we patch are not part of the public API.
+// Resolve them by absolute path (anchored at the package's own package.json) — absolute paths
+// bypass `exports` enforcement, mirroring how `patchNestSwagger` loads them at runtime.
+const swaggerRoot = dirname(require.resolve('@nestjs/swagger/package.json'));
+const loadSchemaObjectFactory = () =>
+  require(join(swaggerRoot, 'dist/services/schema-object-factory.js'));
+const loadSwaggerScanner = () => require(join(swaggerRoot, 'dist/swagger-scanner.js'));
 
 // We test the patching logic by directly inspecting the prototype overrides
 // and verifying the OpenAPI schema generation via the registry.
@@ -20,7 +30,7 @@ describe('patchNestSwagger', () => {
   it('should patch SchemaObjectFactory.prototype.exploreModelSchema', () => {
     patchNestSwagger();
 
-    const schemaObjectFactoryModule = require('@nestjs/swagger/dist/services/schema-object-factory');
+    const schemaObjectFactoryModule = loadSchemaObjectFactory();
     const proto = schemaObjectFactoryModule.SchemaObjectFactory.prototype;
 
     expect(proto.exploreModelSchema.name).toBe('patchedExploreModelSchema');
@@ -29,16 +39,43 @@ describe('patchNestSwagger', () => {
   it('should patch SwaggerScanner.prototype.scanApplication', () => {
     patchNestSwagger();
 
-    const swaggerScannerModule = require('@nestjs/swagger/dist/swagger-scanner');
+    const swaggerScannerModule = loadSwaggerScanner();
     const proto = swaggerScannerModule.SwaggerScanner.prototype;
 
     expect(proto.scanApplication.name).toBe('patchedScanApplication');
   });
 
+  it('should be idempotent — repeated calls never wrap the patch in itself', () => {
+    const ORIGINAL_EXPLORE = Symbol.for(
+      '@cafercangundogdu/nestjs-zod-openapi.originalExploreModelSchema',
+    );
+    const ORIGINAL_SCAN = Symbol.for(
+      '@cafercangundogdu/nestjs-zod-openapi.originalScanApplication',
+    );
+
+    patchNestSwagger();
+    const exploreProto = loadSchemaObjectFactory().SchemaObjectFactory.prototype;
+    const scanProto = loadSwaggerScanner().SwaggerScanner.prototype;
+
+    // The pristine originals captured on the first call.
+    const pristineExplore = exploreProto[ORIGINAL_EXPLORE];
+    const pristineScan = scanProto[ORIGINAL_SCAN];
+
+    // The stashed original must be the genuine framework function, not our patch.
+    expect(pristineExplore.name).not.toBe('patchedExploreModelSchema');
+    expect(pristineScan.name).not.toBe('patchedScanApplication');
+
+    // Re-patching must NOT change which original we delegate to (no wrapper chain growth).
+    patchNestSwagger();
+    patchNestSwagger();
+    expect(exploreProto[ORIGINAL_EXPLORE]).toBe(pristineExplore);
+    expect(scanProto[ORIGINAL_SCAN]).toBe(pristineScan);
+  });
+
   it('should handle ZodDto classes in exploreModelSchema', () => {
     patchNestSwagger();
 
-    const schemaObjectFactoryModule = require('@nestjs/swagger/dist/services/schema-object-factory');
+    const schemaObjectFactoryModule = loadSchemaObjectFactory();
     const factory = new schemaObjectFactoryModule.SchemaObjectFactory(
       /* swaggerTypesMapper */ {},
       /* modelPropertiesAccessor */ { getModelProperties: () => [] },
@@ -63,7 +100,7 @@ describe('patchNestSwagger', () => {
   it('should return the class name for directly created ZodDto', () => {
     patchNestSwagger();
 
-    const schemaObjectFactoryModule = require('@nestjs/swagger/dist/services/schema-object-factory');
+    const schemaObjectFactoryModule = loadSchemaObjectFactory();
     const factory = new schemaObjectFactoryModule.SchemaObjectFactory(
       /* swaggerTypesMapper */ {},
       /* modelPropertiesAccessor */ { getModelProperties: () => [] },
@@ -363,7 +400,7 @@ describe('schema sorting', () => {
 
 describe('patchedExploreModelSchema — edge cases', () => {
   function createSchemaObjectFactory() {
-    const schemaObjectFactoryModule = require('@nestjs/swagger/dist/services/schema-object-factory');
+    const schemaObjectFactoryModule = loadSchemaObjectFactory();
 
     // Provide minimal stubs that satisfy the original exploreModelSchema
     const accessor = {
@@ -438,8 +475,16 @@ describe('patchedExploreModelSchema — edge cases', () => {
 describe('patchedScanApplication — edge cases', () => {
   it('should handle scanApplication when components is undefined', () => {
     // Save the original SwaggerScanner.prototype.scanApplication before patching
-    const swaggerScannerModule = require('@nestjs/swagger/dist/swagger-scanner');
+    const swaggerScannerModule = loadSwaggerScanner();
     const originalScan = swaggerScannerModule.SwaggerScanner.prototype.scanApplication;
+
+    // patchNestSwagger stashes the *pristine* original under a symbol so repeated calls
+    // never re-wrap. To inject our own stub as the original, clear that stash first.
+    const ORIGINAL_SCAN_APPLICATION = Symbol.for(
+      '@cafercangundogdu/nestjs-zod-openapi.originalScanApplication',
+    );
+    const savedStash = swaggerScannerModule.SwaggerScanner.prototype[ORIGINAL_SCAN_APPLICATION];
+    delete swaggerScannerModule.SwaggerScanner.prototype[ORIGINAL_SCAN_APPLICATION];
 
     // Patch with a version that returns no components
     swaggerScannerModule.SwaggerScanner.prototype.scanApplication = () => ({
@@ -448,7 +493,7 @@ describe('patchedScanApplication — edge cases', () => {
       paths: {},
     });
 
-    // Now call patchNestSwagger which will patch over our stub
+    // Now call patchNestSwagger which will capture our stub as the original
     patchNestSwagger();
 
     const scanner = new swaggerScannerModule.SwaggerScanner();
@@ -460,6 +505,11 @@ describe('patchedScanApplication — edge cases', () => {
 
     // Restore
     swaggerScannerModule.SwaggerScanner.prototype.scanApplication = originalScan;
+    if (savedStash) {
+      swaggerScannerModule.SwaggerScanner.prototype[ORIGINAL_SCAN_APPLICATION] = savedStash;
+    } else {
+      delete swaggerScannerModule.SwaggerScanner.prototype[ORIGINAL_SCAN_APPLICATION];
+    }
   });
 
   it('should strip nullable from .catchall(z.any()) schemas via fixGeneratedSchemas', () => {
@@ -485,7 +535,7 @@ describe('patchedScanApplication — edge cases', () => {
     // Alternative: register the schema through exploreModelSchema and run the pipeline
     patchNestSwagger();
 
-    const schemaObjectFactoryModule = require('@nestjs/swagger/dist/services/schema-object-factory');
+    const schemaObjectFactoryModule = loadSchemaObjectFactory();
     const accessor = { getModelProperties: () => [], applyMetadataFactory: () => {} };
     const factory = new schemaObjectFactoryModule.SchemaObjectFactory(accessor, {});
 
