@@ -1,6 +1,11 @@
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { getRefId, OpenAPIRegistry, OpenApiGeneratorV3 } from '@asteasolutions/zod-to-openapi';
+import {
+  extendZodWithOpenApi,
+  getRefId,
+  OpenAPIRegistry,
+  OpenApiGeneratorV3,
+} from '@asteasolutions/zod-to-openapi';
 import { INestApplication } from '@nestjs/common';
 import { SwaggerDocumentOptions } from '@nestjs/swagger';
 
@@ -137,10 +142,26 @@ export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
 
     const schemaName: string = type.name;
 
+    // Pre-built schemas imported from another package can come from a *different*
+    // Zod copy (ESM/CJS dual-package, or a duplicated transitive dependency) that
+    // `initZodOpenApi` never extended — so they lack `.openapi()`. Extend that
+    // copy's `ZodType` in place so generation still works for them.
+    ensureOpenapiExtension(type.zodSchema);
+
     // Register the Zod schema with the OpenAPI registry so that
     // `OpenApiGeneratorV3` can convert it to a proper SchemaObject including
-    // discriminatedUnion -> oneOf, union -> oneOf, nested $ref, etc.
-    registry.register(schemaName, type.zodSchema);
+    // discriminatedUnion -> oneOf, union -> oneOf, nested $ref, etc. A schema that
+    // still can't be registered is skipped (with a warning) rather than aborting
+    // the whole OpenAPI document.
+    try {
+      registry.register(schemaName, type.zodSchema);
+    } catch (err) {
+      console.warn(
+        `[nestjs-zod-openapi] Skipping schema "${schemaName}" in OpenAPI generation: ${
+          (err as Error)?.message ?? String(err)
+        }`,
+      );
+    }
 
     return schemaName;
   };
@@ -556,5 +577,35 @@ function walkAndStrip(obj: any): void {
   // Recurse into all object values
   for (const value of Object.values(obj)) {
     walkAndStrip(value);
+  }
+}
+
+/**
+ * Ensure `schema.openapi()` is callable. `extendZodWithOpenApi` patches a single
+ * Zod copy's `ZodType.prototype`; a schema built against a *different* Zod copy
+ * (ESM vs CJS, or a duplicated transitive dependency) won't inherit it, so calling
+ * `.openapi()` during generation throws. Walk to that schema's base prototype and
+ * extend it in place. No-op when the schema is already extended.
+ */
+function ensureOpenapiExtension(schema: unknown): void {
+  if (!schema || typeof (schema as { openapi?: unknown }).openapi === 'function') {
+    return;
+  }
+  // Climb to the top-most non-Object prototype (the Zod base class prototype);
+  // adding `.openapi` there makes it resolvable for every schema of that copy.
+  let proto = Object.getPrototypeOf(schema);
+  while (
+    proto &&
+    Object.getPrototypeOf(proto) &&
+    Object.getPrototypeOf(proto) !== Object.prototype
+  ) {
+    proto = Object.getPrototypeOf(proto);
+  }
+  if (proto && typeof (proto as { openapi?: unknown }).openapi !== 'function') {
+    try {
+      extendZodWithOpenApi({ ZodType: { prototype: proto } } as never);
+    } catch {
+      // Best-effort — the try/catch around registry.register() is the real safety net.
+    }
   }
 }

@@ -115,9 +115,9 @@ function buildSwaggerMetadata(zodSchema: z.ZodType): Record<string, unknown> {
     const generator = new OpenApiGeneratorV3(registry.definitions);
     const result = generator.generateComponents();
     const allSchemas = (result.components?.schemas ?? {}) as Record<string, Record<string, any>>;
-    const rootSchema = allSchemas['__ZodDtoMeta__'];
+    const rootSchema = allSchemas.__ZodDtoMeta__;
 
-    if (!rootSchema || rootSchema.type !== 'object' || !rootSchema.properties) {
+    if (rootSchema?.type !== 'object' || !rootSchema.properties) {
       return {};
     }
 
@@ -265,6 +265,7 @@ function extractZodPattern(schema: z.ZodType): string | undefined {
  *
  * This helper ensures the function has the correct `.name` for NestJS to unwrap.
  */
+// biome-ignore lint/complexity/noBannedTypes: NestJS DTO `type` thunks resolve to arbitrary constructors/primitives (String, Number, a class, …); the generic `Function` is the intended shape — a narrower signature would reject valid NestJS type references.
 function lazyType(ctor: Function): () => Function {
   // V8 assigns name 'type' to the arrow function because it's the value of
   // the property key 'type' in the object literal. We extract and return it.
