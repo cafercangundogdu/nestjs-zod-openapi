@@ -5,6 +5,7 @@
   "author": "Cafer Can Gundogdu",
   "license": "MIT",
   "type": "commonjs",
+  "packageManager": "pnpm@11.13.0",
   "main": "./dist/cjs/index.js",
   "types": "./dist/cjs/index.d.ts",
   "exports": {
