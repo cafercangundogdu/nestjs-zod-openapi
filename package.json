@@ -5,29 +5,43 @@
   "author": "Cafer Can Gundogdu",
   "license": "MIT",
   "type": "commonjs",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/cjs/index.js",
+  "types": "./dist/cjs/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./package.json": "./package.json"
   },
-  "typesVersions": {
-    "*": {}
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "pnpm run clean && pnpm run build:cjs && pnpm run build:esm && pnpm run build:esm:marker",
+    "build:cjs": "tsc -p tsconfig.build.json",
+    "build:esm": "tsc -p tsconfig.build.esm.json",
+    "build:esm:marker": "node -e \"require('node:fs').writeFileSync('dist/esm/package.json', JSON.stringify({ type: 'module' }, null, 2))\"",
+    "check:package": "publint && attw --pack .",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
+    "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
-    "prepublishOnly": "pnpm run build",
+    "prepublishOnly": "pnpm run typecheck && pnpm run build && pnpm run check:package",
     "prepare": "husky"
   },
   "keywords": [
@@ -46,7 +60,7 @@
     "url": "git+https://github.com/cafercangundogdu/nestjs-zod-openapi.git"
   },
   "dependencies": {
-    "@asteasolutions/zod-to-openapi": "^8.5.0",
+    "@asteasolutions/zod-to-openapi": "^9.0.0",
     "openapi3-ts": "^4.6.0"
   },
   "peerDependencies": {
@@ -55,24 +69,25 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@arethetypeswrong/cli": "^0.18.4",
-    "@biomejs/biome": "^2.5.1",
-    "@commitlint/cli": "^21.2.0",
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@biomejs/biome": "^2.5.3",
+    "@commitlint/cli": "^21.2.1",
     "@commitlint/config-conventional": "^21.2.0",
-    "@nestjs/common": "^11.1.27",
-    "@nestjs/core": "^11.1.27",
-    "@nestjs/platform-express": "^11.1.27",
+    "@nestjs/common": "^11.1.28",
+    "@nestjs/core": "^11.1.28",
+    "@nestjs/platform-express": "^11.1.28",
     "@nestjs/swagger": "^11.4.5",
-    "@nestjs/testing": "^11.1.27",
+    "@nestjs/testing": "^11.1.28",
+    "@swc/core": "^1.15.43",
+    "@swc/jest": "^0.2.39",
     "@types/jest": "^30.0.0",
-    "@types/node": "^26.0.1",
+    "@types/node": "^26.1.1",
     "husky": "^9.1.7",
     "jest": "^30.4.2",
     "publint": "^0.3.21",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
-    "ts-jest": "^29.4.11",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "zod": "^4.4.3"
   }
 }

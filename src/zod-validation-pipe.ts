@@ -6,7 +6,7 @@ import {
   PipeTransform,
 } from '@nestjs/common';
 import { z } from 'zod';
-import { isZodDto, ZodDtoStatic } from './create-zod-dto';
+import { isZodDto, ZodDtoStatic } from './create-zod-dto.js';
 
 /**
  * Structured error format returned inside `BadRequestException`.

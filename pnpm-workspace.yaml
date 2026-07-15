@@ -1,6 +1,13 @@
+allowBuilds:
+  '@scarf/scarf': true
+  '@swc/core': true
+  unrs-resolver: true
+minimumReleaseAgeExclude:
+  - '@asteasolutions/zod-to-openapi@9.0.0'
 onlyBuiltDependencies:
   - '@nestjs/core'
   - '@scarf/scarf'
+  - '@swc/core'
   - unrs-resolver
 # Transitive dev-only security fixes whose parents pin pre-patch versions.
 # (The rest resolve to patched releases naturally on a fresh install.)

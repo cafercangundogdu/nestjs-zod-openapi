@@ -11,7 +11,7 @@ describe('Example App — localeCompare sorting', () => {
   let swaggerDoc: Record<string, any>;
 
   beforeAll(async () => {
-    const { AppModule } = await import('../example/src/app.module');
+    const { AppModule } = await import('../example/src/app.module.js');
 
     patchNestSwagger({ schemasSort: 'localeCompare' });
 
@@ -49,7 +49,7 @@ describe('Example App — default sorting', () => {
   let swaggerDoc: Record<string, any>;
 
   beforeAll(async () => {
-    const { AppModule } = await import('../example/src/app.module');
+    const { AppModule } = await import('../example/src/app.module.js');
 
     patchNestSwagger({ schemasSort: 'default' });
 
@@ -88,7 +88,7 @@ describe('Example App — Swagger output verification', () => {
   let swaggerDoc: Record<string, any>;
 
   beforeAll(async () => {
-    const { AppModule } = await import('../example/src/app.module');
+    const { AppModule } = await import('../example/src/app.module.js');
 
     patchNestSwagger({ schemasSort: 'alpha' });
 

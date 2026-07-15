@@ -71,7 +71,13 @@ export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
   // copy of @nestjs/swagger that differs from the one the NestJS app uses.
   // `createRequire` anchored at the app's entry point guarantees we patch the
   // same prototype instances that SwaggerModule will use at runtime.
-  const appRequire = createRequire(require.main?.filename ?? `${process.cwd()}/package.json`);
+  // `require.main` only exists in CJS; the ESM build falls back to the entry
+  // script (process.argv[1]) and then to the working directory.
+  const appEntry =
+    (typeof require === 'function' ? require.main?.filename : undefined) ??
+    process.argv[1] ??
+    `${process.cwd()}/package.json`;
+  const appRequire = createRequire(appEntry);
   // Since @nestjs/swagger@11.4.3 the package ships a restrictive `exports` map that blocks deep
   // subpath imports (`@nestjs/swagger/dist/...`) under Node's native loader. The
   // `SchemaObjectFactory` / `SwaggerScanner` classes we patch are internal (not part of the
