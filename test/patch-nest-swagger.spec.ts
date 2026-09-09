@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { dirname, join } from 'node:path';
 import { OpenAPIRegistry, OpenApiGeneratorV3 } from '@asteasolutions/zod-to-openapi';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { createZodDto, patchNestSwagger } from '../src';
 
@@ -514,7 +515,6 @@ describe('patchedScanApplication — edge cases', () => {
 
   it('should strip nullable from .catchall(z.any()) schemas via fixGeneratedSchemas', () => {
     // Directly test the fix pipeline by simulating what patchedScanApplication does
-    const { OpenAPIRegistry, OpenApiGeneratorV3 } = require('@asteasolutions/zod-to-openapi');
 
     const CatchallSchema = z.object({ key: z.string() }).catchall(z.any()).openapi('CatchallFix');
 
@@ -523,7 +523,7 @@ describe('patchedScanApplication — edge cases', () => {
 
     const generator = new OpenApiGeneratorV3(registry.definitions);
     const generated = generator.generateComponents();
-    const schemas = generated.components?.schemas ?? {};
+    const schemas = (generated.components?.schemas ?? {}) as Record<string, any>;
 
     // Before fix: additionalProperties should have nullable
     expect(schemas.CatchallFix.additionalProperties).toEqual({ nullable: true });

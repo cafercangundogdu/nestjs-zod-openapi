@@ -3,7 +3,7 @@
     "module": "nodenext",
     "target": "ES2021",
     "lib": ["ES2021"],
-    "types": ["node", "jest"],
+    "types": ["node"],
     "declaration": true,
     "strict": true,
     "noImplicitAny": true,

@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Test } from '@nestjs/testing';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { patchNestSwagger } from '../src';
 
 /**

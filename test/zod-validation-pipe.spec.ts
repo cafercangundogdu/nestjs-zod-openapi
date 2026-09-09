@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { BadRequestException } from '@nestjs/common';
+import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { createZodDto, ZodValidationPipe } from '../src';
 
@@ -23,7 +24,7 @@ describe('ZodValidationPipe (global mode — no constructor arg)', () => {
     const value = { name: 123 };
     try {
       pipe.transform(value, { type: 'body', metatype: UserDto });
-      fail('Expected BadRequestException');
+      expect.unreachable('Expected BadRequestException');
     } catch (err) {
       expect(err).toBeInstanceOf(BadRequestException);
       const response = (err as BadRequestException).getResponse() as Record<string, any>;

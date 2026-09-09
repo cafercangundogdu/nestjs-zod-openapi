@@ -1,14 +1,46 @@
 allowBuilds:
   '@scarf/scarf': true
   '@swc/core': true
-  unrs-resolver: true
+minimumReleaseAge: 10080
+# Temporary bypasses of the minimumReleaseAge policy above: these dev-toolchain
+# releases were younger than the 7-day threshold at upgrade time (2026-09-09) and
+# were allowed deliberately. Every entry is one pnpm actually blocked, pinned to the
+# exact version; the platform sub-packages are listed individually because pnpm
+# rejects name globs combined with a version ("Name patterns are not allowed with
+# version unions"). All of these age out on 2026-09-14 — delete this block then.
 minimumReleaseAgeExclude:
-  - '@asteasolutions/zod-to-openapi@9.0.0'
+  - '@biomejs/biome@2.5.12'
+  - '@biomejs/cli-darwin-arm64@2.5.12'
+  - '@biomejs/cli-darwin-x64@2.5.12'
+  - '@biomejs/cli-linux-arm64-musl@2.5.12'
+  - '@biomejs/cli-linux-arm64@2.5.12'
+  - '@biomejs/cli-linux-x64-musl@2.5.12'
+  - '@biomejs/cli-linux-x64@2.5.12'
+  - '@biomejs/cli-win32-arm64@2.5.12'
+  - '@biomejs/cli-win32-x64@2.5.12'
+  - '@swc/core@1.16.2'
+  - '@swc/core-darwin-arm64@1.16.2'
+  - '@swc/core-darwin-x64@1.16.2'
+  - '@swc/core-linux-arm-gnueabihf@1.16.2'
+  - '@swc/core-linux-arm64-gnu@1.16.2'
+  - '@swc/core-linux-arm64-musl@1.16.2'
+  - '@swc/core-linux-ppc64-gnu@1.16.2'
+  - '@swc/core-linux-s390x-gnu@1.16.2'
+  - '@swc/core-linux-x64-gnu@1.16.2'
+  - '@swc/core-linux-x64-musl@1.16.2'
+  - '@swc/core-win32-arm64-msvc@1.16.2'
+  - '@swc/core-win32-ia32-msvc@1.16.2'
+  - '@swc/core-win32-x64-msvc@1.16.2'
+  - 'vitest@5.0.0'
+  - '@vitest/coverage-v8@5.0.0'
+  - '@vitest/mocker@5.0.0'
+  - '@vitest/spy@5.0.0'
+  - 'unplugin-swc@1.6.0'
+  - '@types/node@26.5.0'
 onlyBuiltDependencies:
   - '@nestjs/core'
   - '@scarf/scarf'
   - '@swc/core'
-  - unrs-resolver
 # Transitive dev-only security fixes whose parents pin pre-patch versions.
 # (The rest resolve to patched releases naturally on a fresh install.)
 overrides:

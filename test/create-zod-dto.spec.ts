@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { OpenApiGeneratorV3 } from '@asteasolutions/zod-to-openapi';
+import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { createZodDto, isZodDto } from '../src';
 
@@ -607,11 +609,11 @@ describe('_OPENAPI_METADATA_FACTORY', () => {
 
   it('should return {} when buildSwaggerMetadata throws', () => {
     // Monkey-patch to simulate an error in generateComponents
-    const zodToOpenapi = require('@asteasolutions/zod-to-openapi') as any;
-    const origGenerate = zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents;
+    const generatorProto = OpenApiGeneratorV3.prototype as any;
+    const origGenerate = generatorProto.generateComponents;
 
     // Temporarily make generateComponents throw
-    zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents = () => {
+    generatorProto.generateComponents = () => {
       throw new Error('simulated failure');
     };
 
@@ -623,16 +625,16 @@ describe('_OPENAPI_METADATA_FACTORY', () => {
       expect(meta).toEqual({});
     } finally {
       // Restore
-      zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents = origGenerate;
+      generatorProto.generateComponents = origGenerate;
     }
   });
 
   it('should return {} when generateComponents returns no schemas', () => {
     // Monkey-patch to return components without schemas
-    const zodToOpenapi = require('@asteasolutions/zod-to-openapi') as any;
-    const origGenerate = zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents;
+    const generatorProto = OpenApiGeneratorV3.prototype as any;
+    const origGenerate = generatorProto.generateComponents;
 
-    zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents = () => ({
+    generatorProto.generateComponents = () => ({
       components: { parameters: {} },
     });
 
@@ -642,16 +644,16 @@ describe('_OPENAPI_METADATA_FACTORY', () => {
       // No schemas → rootSchema is undefined → returns {}
       expect(meta).toEqual({});
     } finally {
-      zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents = origGenerate;
+      generatorProto.generateComponents = origGenerate;
     }
   });
 
   it('should return {} when generateComponents returns schema with non-object type', () => {
     // Monkey-patch to return a schema that is not type:'object'
-    const zodToOpenapi = require('@asteasolutions/zod-to-openapi') as any;
-    const origGenerate = zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents;
+    const generatorProto = OpenApiGeneratorV3.prototype as any;
+    const origGenerate = generatorProto.generateComponents;
 
-    zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents = () => ({
+    generatorProto.generateComponents = () => ({
       components: {
         schemas: {
           __ZodDtoMeta__: { type: 'string' },
@@ -665,7 +667,7 @@ describe('_OPENAPI_METADATA_FACTORY', () => {
       // type is 'string', not 'object' → returns {}
       expect(meta).toEqual({});
     } finally {
-      zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents = origGenerate;
+      generatorProto.generateComponents = origGenerate;
     }
   });
 
@@ -673,10 +675,10 @@ describe('_OPENAPI_METADATA_FACTORY', () => {
     // Monkey-patch to return an object schema for a non-object Zod type.
     // This forces buildNullableKeySet/buildPatternMap to receive a schema
     // without a shape, covering the `!shape` return path.
-    const zodToOpenapi = require('@asteasolutions/zod-to-openapi') as any;
-    const origGenerate = zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents;
+    const generatorProto = OpenApiGeneratorV3.prototype as any;
+    const origGenerate = generatorProto.generateComponents;
 
-    zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents = () => ({
+    generatorProto.generateComponents = () => ({
       components: {
         schemas: {
           __ZodDtoMeta__: {
@@ -697,7 +699,7 @@ describe('_OPENAPI_METADATA_FACTORY', () => {
       expect((meta as any).x).toBeDefined();
       expect((meta as any).x.type()).toBe(String);
     } finally {
-      zodToOpenapi.OpenApiGeneratorV3.prototype.generateComponents = origGenerate;
+      generatorProto.generateComponents = origGenerate;
     }
   });
 

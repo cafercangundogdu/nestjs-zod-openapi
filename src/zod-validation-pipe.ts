@@ -1,12 +1,13 @@
 import {
-  ArgumentMetadata,
+  type ArgumentMetadata,
   BadRequestException,
   Injectable,
   Optional,
-  PipeTransform,
+  type PipeTransform,
 } from '@nestjs/common';
-import { z } from 'zod';
-import { isZodDto, ZodDtoStatic } from './create-zod-dto.js';
+import type { z } from 'zod';
+import { isZodDto, type ZodDtoStatic } from './create-zod-dto.js';
+import { isZodSchema } from './zod-introspection.js';
 
 /**
  * Structured error format returned inside `BadRequestException`.
@@ -22,7 +23,9 @@ export interface ZodValidationError {
  *
  * Usage:
  *
- * 1. **Global pipe** (validates any parameter whose type is a ZodDto):
+ * 1. **Global pipe** (validates any parameter whose type is a ZodDto, or — on
+ *    NestJS 12 — that has a Zod schema attached via `@Body({ schema })`,
+ *    `@Query({ schema })` or `@Param(name, { schema })`):
  *    ```ts
  *    app.useGlobalPipes(new ZodValidationPipe());
  *    ```
@@ -31,6 +34,11 @@ export interface ZodValidationError {
  *    ```ts
  *    @Body(new ZodValidationPipe(MySchema)) body: z.infer<typeof MySchema>
  *    ```
+ *
+ * Resolution order: constructor schema → schema attached to the parameter
+ * decorator → ZodDto metatype → pass through. Standard Schemas from other
+ * libraries (Valibot, ArkType, …) are passed through untouched; use NestJS 12's
+ * `StandardSchemaValidationPipe` for those.
  */
 @Injectable()
 export class ZodValidationPipe implements PipeTransform {
@@ -44,6 +52,13 @@ export class ZodValidationPipe implements PipeTransform {
     // If a specific schema/dto was passed to the constructor, use it.
     if (this.schemaOrDto) {
       return this.validate(value, this.schemaOrDto);
+    }
+
+    // NestJS 12 attaches the decorator's `schema` option to the metadata. Read it
+    // structurally so this also compiles against NestJS 11 typings, which lack it.
+    const attachedSchema = (metadata as ArgumentMetadata & { schema?: unknown }).schema;
+    if (isZodSchema(attachedSchema)) {
+      return this.validate(value, attachedSchema);
     }
 
     // Otherwise, try to infer from the parameter's metatype.

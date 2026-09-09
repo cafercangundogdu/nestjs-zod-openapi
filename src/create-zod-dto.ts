@@ -1,9 +1,11 @@
 import { getRefId, OpenAPIRegistry, OpenApiGeneratorV3 } from '@asteasolutions/zod-to-openapi';
 import type { z } from 'zod';
+import {
+  extractZodPattern,
+  getZodObjectShape,
+  isStructurallyNullable,
+} from './zod-introspection.js';
 
-/**
- * Marker interface for classes created by `createZodDto`.
- */
 /**
  * Resolves the instance type for `new ()`.
  *
@@ -23,6 +25,9 @@ type DtoInstance<T extends z.ZodType> =
     ? { [K in keyof z.output<T>]: z.output<T>[K] }
     : object;
 
+/**
+ * Marker interface for classes created by `createZodDto`.
+ */
 export interface ZodDtoStatic<T extends z.ZodType = z.ZodType> {
   new (): DtoInstance<T>;
   schema: T;
@@ -149,48 +154,13 @@ function buildSwaggerMetadata(zodSchema: z.ZodType): Record<string, unknown> {
 }
 
 /**
- * Determines whether a Zod schema is structurally nullable — i.e., whether it
- * is explicitly wrapped in `.nullable()` (ZodNullable) somewhere in its
- * modifier chain.  This differs from the runtime check
- * `schema.safeParse(null).success`, which returns true for `z.coerce.*` types
- * because JavaScript coercion happens to accept `null` (e.g. `new Date(null)`
- * produces epoch, `String(null)` produces `"null"`).
- */
-function isStructurallyNullable(schema: z.ZodType): boolean {
-  let s: any = schema;
-  // Walk through modifier wrappers that don't change nullability semantics.
-  const passthrough = new Set([
-    'optional',
-    'default',
-    'prefault',
-    'transform',
-    'pipe',
-    'catch',
-    'readonly',
-    'brand',
-    'nonoptional',
-  ]);
-  while (s?._zod?.def) {
-    const type: string | undefined = s._zod.def.type;
-    if (type === 'nullable') return true;
-    if (type && passthrough.has(type) && s._zod.def.innerType) {
-      s = s._zod.def.innerType;
-      continue;
-    }
-    break;
-  }
-  return false;
-}
-
-/**
  * For a `z.object()` schema, returns a Set of property keys whose Zod
  * definition is structurally nullable.  Returns `undefined` for non-object
  * schemas (no shape to inspect).
  */
 function buildNullableKeySet(zodSchema: z.ZodType): Set<string> | undefined {
-  const shape: Record<string, z.ZodType> | undefined =
-    (zodSchema as any)._zod?.def?.shape ?? (zodSchema as any).shape;
-  if (!shape || typeof shape !== 'object') return undefined;
+  const shape = getZodObjectShape(zodSchema);
+  if (!shape) return undefined;
   const keys = new Set<string>();
   for (const [key, propSchema] of Object.entries(shape)) {
     if (isStructurallyNullable(propSchema)) {
@@ -203,13 +173,11 @@ function buildNullableKeySet(zodSchema: z.ZodType): Set<string> | undefined {
 /**
  * For a `z.object()` schema, returns a Map of property keys to their Zod
  * check regex patterns (e.g. `.uuid()` → UUID regex, `.email()` → email regex).
- * These patterns are stored as `RegExp` in `_zod.def.checks[].def.pattern`.
  * Returns `undefined` for non-object schemas.
  */
 function buildPatternMap(zodSchema: z.ZodType): Map<string, string> | undefined {
-  const shape: Record<string, z.ZodType> | undefined =
-    (zodSchema as any)._zod?.def?.shape ?? (zodSchema as any).shape;
-  if (!shape || typeof shape !== 'object') return undefined;
+  const shape = getZodObjectShape(zodSchema);
+  if (!shape) return undefined;
 
   const map = new Map<string, string>();
   for (const [key, propSchema] of Object.entries(shape)) {
@@ -220,45 +188,9 @@ function buildPatternMap(zodSchema: z.ZodType): Map<string, string> | undefined 
 }
 
 /**
- * Extracts the regex pattern from a Zod schema's format checks.
- * Unwraps optional/nullable/default wrappers to find the inner string check.
- */
-function extractZodPattern(schema: z.ZodType): string | undefined {
-  let s: any = schema;
-  // Unwrap modifiers
-  const wrappers = new Set([
-    'optional',
-    'nullable',
-    'default',
-    'prefault',
-    'transform',
-    'pipe',
-    'catch',
-    'readonly',
-    'brand',
-    'nonoptional',
-  ]);
-  while (s?._zod?.def) {
-    const type: string | undefined = s._zod.def.type;
-    if (type && wrappers.has(type) && s._zod.def.innerType) {
-      s = s._zod.def.innerType;
-      continue;
-    }
-    break;
-  }
-  // Look through checks for a RegExp pattern
-  const checks: any[] = s?._zod?.def?.checks ?? [];
-  for (const check of checks) {
-    const pat = check?.def?.pattern;
-    if (pat instanceof RegExp) return pat.source;
-  }
-  return undefined;
-}
-
-/**
  * Creates a lazy type function recognized by `@nestjs/swagger`'s `isLazyTypeFunc`.
  *
- * NestJS Swagger v11 detects lazy type wrappers via `fn.name == 'type'`.
+ * NestJS Swagger v11 and v12 detect lazy type wrappers via `fn.name == 'type'`.
  * V8 only assigns this name when the function is created as a value in an
  * object literal with key `type`.  Arrow functions created via assignment
  * (e.g., `meta.type = () => String`) get an empty name instead.

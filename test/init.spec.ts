@@ -1,4 +1,8 @@
 import 'reflect-metadata';
+import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import { initZodOpenApi } from '../src';
+import * as init from '../src/init';
 
 /**
  * Tests for init.ts — specifically the already-initialized guard (line 21).
@@ -8,24 +12,17 @@ import 'reflect-metadata';
  */
 describe('initZodOpenApi', () => {
   it('should not throw when called a second time (already-initialized guard)', () => {
-    const { z } = require('zod');
-    const { initZodOpenApi } = require('../src');
-
     // setup.ts already called initZodOpenApi(z), so this should hit line 21
     expect(() => initZodOpenApi(z)).not.toThrow();
   });
 
   it('should still work after second call — .openapi() should still be available', () => {
-    const { z } = require('zod');
-
     // Verify .openapi() still works
     const schema = z.object({ x: z.string() }).openapi('TestInit');
     expect(schema).toBeDefined();
   });
 
   it('should re-export extendZodWithOpenApi', () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const init = require('../src/init');
     expect(typeof init.extendZodWithOpenApi).toBe('function');
   });
 });

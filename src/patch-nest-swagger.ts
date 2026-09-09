@@ -1,13 +1,17 @@
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { OpenAPIRegistry, OpenApiGeneratorV3 } from '@asteasolutions/zod-to-openapi';
+import type { INestApplication } from '@nestjs/common';
+import type { SwaggerDocumentOptions } from '@nestjs/swagger';
 import {
-  extendZodWithOpenApi,
-  getRefId,
-  OpenAPIRegistry,
-  OpenApiGeneratorV3,
-} from '@asteasolutions/zod-to-openapi';
-import { INestApplication } from '@nestjs/common';
-import { SwaggerDocumentOptions } from '@nestjs/swagger';
+  ensureOpenapiExtension,
+  fixGeneratedSchemas,
+  stripAdditionalPropsNullable,
+} from './openapi-fixes.js';
+import {
+  createStandardSchemaConverter,
+  type StandardSchemaConverter,
+} from './standard-schema-converter.js';
 
 export interface PatchNestSwaggerOptions {
   /**
@@ -19,6 +23,19 @@ export interface PatchNestSwaggerOptions {
    * @default 'default'
    */
   schemasSort?: 'default' | 'alpha' | 'localeCompare';
+
+  /**
+   * Converter for Standard Schema objects attached with NestJS 12's
+   * `@Body({ schema })`, `@Query({ schema })`, `@Param(name, { schema })` and
+   * `@ApiResponse({ standardSchema })`. It is injected as the
+   * `standardSchemaConverter` option of `SwaggerModule.createDocument()` unless
+   * the application already passes one there. Set to `false` to leave
+   * `@nestjs/swagger`'s built-in conversion in place. Has no effect on
+   * `@nestjs/swagger` 11, which does not know about Standard Schema.
+   *
+   * @default createStandardSchemaConverter()
+   */
+  standardSchemaConverter?: StandardSchemaConverter | false;
 }
 
 // We monkey-patch `@nestjs/swagger` internals at runtime. To stay safe across
@@ -31,9 +48,12 @@ const ORIGINAL_EXPLORE_MODEL_SCHEMA = Symbol.for(
 const ORIGINAL_SCAN_APPLICATION = Symbol.for(
   '@cafercangundogdu/nestjs-zod-openapi.originalScanApplication',
 );
+const ORIGINAL_GET_SCHEMA_OVERRIDE = Symbol.for(
+  '@cafercangundogdu/nestjs-zod-openapi.originalGetSchemaOverride',
+);
 
 /** The range of `@nestjs/swagger` major versions this patch is verified against. */
-const SUPPORTED_SWAGGER_MAJORS = [11];
+const SUPPORTED_SWAGGER_MAJORS = [11, 12];
 
 function assertPatchTarget(condition: unknown, detail: string): asserts condition {
   if (!condition) {
@@ -61,10 +81,17 @@ function assertPatchTarget(condition: unknown, detail: string): asserts conditio
  * 2. Overrides `SwaggerScanner.prototype.scanApplication` so that after the
  *    normal scan completes, the Zod-to-OpenAPI generator runs over the
  *    registry and the resulting component schemas are merged into the final
- *    OpenAPI document.
+ *    OpenAPI document. On `@nestjs/swagger` 12 it also injects
+ *    `createStandardSchemaConverter()` into the document options so schemas
+ *    attached with `@Body({ schema })` & co. are rendered the same way.
+ *
+ * 3. (`@nestjs/swagger` 12 only) Wraps `SchemaObjectFactory.prototype.getSchemaOverride`
+ *    so an unnamed `@Query({ schema })` / `@Param({ schema })` whose schema is a
+ *    named (`.openapi('Name')`) object still expands into individual parameters.
  */
 export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
-  const { schemasSort = 'default' } = options;
+  const { schemasSort = 'default', standardSchemaConverter = createStandardSchemaConverter() } =
+    options;
 
   // Resolve @nestjs/swagger internals from the **consumer's** node_modules,
   // not this library's. In pnpm/monorepo setups the library may have its own
@@ -83,6 +110,8 @@ export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
   // `SchemaObjectFactory` / `SwaggerScanner` classes we patch are internal (not part of the
   // public API), so we resolve the package root via its `package.json` (an allowed export) and
   // require the internal files by absolute path — absolute paths bypass `exports` enforcement.
+  // @nestjs/swagger 12 ships these files as ESM; `require()` still returns their namespace
+  // (Node's `require(esm)`, available on every Node version NestJS 12 supports).
   let swaggerRoot: string;
   let schemaObjectFactoryModule: any;
   let swaggerScannerModule: any;
@@ -192,16 +221,21 @@ export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
   SwaggerScanner.prototype.scanApplication = function patchedScanApplication(
     this: any,
     app: INestApplication,
-    swaggerOptions: SwaggerDocumentOptions,
+    swaggerOptions?: SwaggerDocumentOptions,
   ) {
-    const openAPIObject = originalScanApplication.call(this, app, swaggerOptions);
+    const openAPIObject = originalScanApplication.call(
+      this,
+      app,
+      withStandardSchemaConverter(swaggerOptions, standardSchemaConverter),
+    );
 
     // Generate OpenAPI component schemas from all registered Zod schemas.
     const generator = new OpenApiGeneratorV3(registry.definitions);
     const generated = generator.generateComponents();
 
     // Merge generated schemas with any schemas the default scanner produced
-    // (e.g. from `@ApiProperty()` decorators on non-Zod classes).
+    // (e.g. from `@ApiProperty()` decorators on non-Zod classes, or from the
+    // Standard Schema converter).
     const mergedSchemas: Record<string, any> = {
       ...(openAPIObject.components?.schemas ?? {}),
       ...(generated.components?.schemas ?? {}),
@@ -228,11 +262,66 @@ export function patchNestSwagger(options: PatchNestSwaggerOptions = {}): void {
 
     return openAPIObject;
   };
+
+  // -----------------------------------------------------------------------
+  // 3. (@nestjs/swagger 12+) Resolve `$ref` overrides for unnamed parameters
+  // -----------------------------------------------------------------------
+  // `SchemaObjectFactory.getSchemaOverride` runs the `standardSchemaConverter` for a
+  // parameter. NestJS then expands an *unnamed* query/path/header parameter into one
+  // parameter per property — but only when the converted schema is an inline object.
+  // `createStandardSchemaConverter()` returns a `$ref` for `.openapi('Name')` schemas,
+  // so dereference it here for that case. Bodies and named parameters keep the `$ref`.
+  // Absent on @nestjs/swagger 11 (no Standard Schema support) — nothing to do there.
+  if (typeof SchemaObjectFactory.prototype.getSchemaOverride === 'function') {
+    const originalGetSchemaOverride: (...args: any[]) => any =
+      SchemaObjectFactory.prototype[ORIGINAL_GET_SCHEMA_OVERRIDE] ??
+      SchemaObjectFactory.prototype.getSchemaOverride;
+    SchemaObjectFactory.prototype[ORIGINAL_GET_SCHEMA_OVERRIDE] = originalGetSchemaOverride;
+
+    SchemaObjectFactory.prototype.getSchemaOverride = function patchedGetSchemaOverride(
+      this: any,
+      param: any,
+      schemas: Record<string, any>,
+    ) {
+      const override = originalGetSchemaOverride.call(this, param, schemas);
+      if (typeof override?.$ref !== 'string' || param?.in === 'body' || param?.name) {
+        return override;
+      }
+      const resolved = schemas?.[override.$ref.replace('#/components/schemas/', '')];
+      return resolved?.type === 'object' && resolved.properties ? resolved : override;
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// `standardSchemaConverter` is widened to `unknown` so this compiles on both
+// @nestjs/swagger 11 (where `SwaggerDocumentOptions` has no such key) and 12
+// (where its converter type is structurally looser than ours — `schema: unknown`).
+type SwaggerDocumentOptionsWithConverter = Omit<
+  SwaggerDocumentOptions,
+  'standardSchemaConverter'
+> & {
+  standardSchemaConverter?: unknown;
+};
+
+/**
+ * Adds our Standard Schema converter to the `createDocument()` options unless the
+ * app supplied its own (or injection was disabled). `@nestjs/swagger` 11 simply
+ * ignores the extra option.
+ */
+function withStandardSchemaConverter(
+  options: SwaggerDocumentOptionsWithConverter | undefined,
+  converter: StandardSchemaConverter | false,
+): SwaggerDocumentOptionsWithConverter {
+  const base = options ?? {};
+  if (converter === false || base.standardSchemaConverter) {
+    return base;
+  }
+  return { ...base, standardSchemaConverter: converter };
+}
 
 /**
  * Reads the installed `@nestjs/swagger` version and warns (once-ish, via console) when its
@@ -275,343 +364,4 @@ function sortSchemas(
 
   const entries = Object.entries(schemas).sort(([a], [b]) => comparator(a, b));
   return Object.fromEntries(entries);
-}
-
-// ---------------------------------------------------------------------------
-// Spurious nullable fix for z.coerce.* types
-// ---------------------------------------------------------------------------
-
-/**
- * Walks the registry definitions and strips `nullable: true` from generated
- * component schema properties that are NOT structurally nullable in the
- * original Zod schema.
- *
- * This is needed because `@asteasolutions/zod-to-openapi` uses
- * `schema.safeParse(null).success` to detect nullability — which returns
- * `true` for all `z.coerce.*` types (e.g. `new Date(null)` → epoch).
- */
-function fixGeneratedSchemas(registry: OpenAPIRegistry, schemas: Record<string, any>): void {
-  // Collect ALL named Zod schemas — including auto-discovered ones nested
-  // inside registered schemas (e.g. UserSchema.openapi('User') referenced
-  // from UserDto). The registry only contains top-level registrations,
-  // but the OpenAPI generator auto-discovers nested .openapi() schemas.
-  const zodSchemaMap = collectNamedZodSchemas(registry);
-
-  for (const [refId, zodSchema] of zodSchemaMap) {
-    const componentSchema = schemas[refId];
-    if (!componentSchema) continue;
-    fixSchemaRecursive(zodSchema, componentSchema);
-  }
-}
-
-/**
- * Recursively walks registered Zod schemas and collects ALL named schemas
- * (those with `.openapi('Name')`) into a Map<refId, zodSchema>.
- */
-function collectNamedZodSchemas(registry: OpenAPIRegistry): Map<string, any> {
-  const map = new Map<string, any>();
-  for (const def of registry.definitions) {
-    if (def.type !== 'schema') continue;
-    walkZodTree(def.schema, map);
-  }
-  return map;
-}
-
-function walkZodTree(zodSchema: any, map: Map<string, any>): void {
-  if (!zodSchema) return;
-
-  const refId = getRefId(zodSchema as any);
-  if (refId) {
-    if (map.has(refId)) return; // already visited — prevents infinite loops
-    map.set(refId, zodSchema);
-  }
-
-  // Walk object shape
-  const inner = unwrapToInner(zodSchema);
-  const shape = inner?._zod?.def?.shape ?? inner?.shape;
-  if (shape && typeof shape === 'object') {
-    for (const field of Object.values(shape) as any[]) {
-      const fieldInner = unwrapToInner(field);
-      walkZodTree(fieldInner, map);
-      // Also check array elements
-      const element = fieldInner?._zod?.def?.element ?? fieldInner?.element;
-      if (element) walkZodTree(element, map);
-    }
-  }
-
-  // Walk discriminatedUnion / union options
-  const options = inner?._zod?.def?.options;
-  if (Array.isArray(options)) {
-    for (const opt of options) {
-      walkZodTree(opt, map);
-    }
-  }
-}
-
-/**
- * Recursively walks a generated OpenAPI schema alongside its source Zod schema:
- * - Strips spurious `nullable: true` from z.coerce.* types
- * - Enriches known `format` values with their regex `pattern`
- * - Strips spurious `nullable` from additionalProperties on passthrough/record schemas
- */
-function fixSchemaRecursive(zodSchema: any, openApiSchema: any): void {
-  // Fix additionalProperties at the root schema level (for .passthrough() / z.record())
-  if (
-    openApiSchema?.additionalProperties &&
-    typeof openApiSchema.additionalProperties === 'object' &&
-    openApiSchema.additionalProperties.nullable
-  ) {
-    const recordValueZod = getRecordValueType(zodSchema);
-    if (recordValueZod) {
-      if (!isStructurallyNullable(recordValueZod))
-        delete openApiSchema.additionalProperties.nullable;
-    } else if (isPassthroughObject(zodSchema)) {
-      delete openApiSchema.additionalProperties.nullable;
-    }
-  }
-  const shape = getZodObjectShape(zodSchema);
-  if (!shape || !openApiSchema?.properties) return;
-
-  for (const [key, prop] of Object.entries(openApiSchema.properties as Record<string, any>)) {
-    const zodField = shape[key];
-    if (!zodField) continue;
-
-    // Fix spurious nullable
-    if (prop.nullable && !isStructurallyNullable(zodField)) {
-      delete prop.nullable;
-    }
-
-    // Enrich format with regex pattern from Zod checks
-    if (prop.format && !prop.pattern) {
-      const pattern = extractZodPattern(zodField);
-      if (pattern) prop.pattern = pattern;
-    }
-
-    // Fix additionalProperties (z.record value type or .passthrough())
-    if (
-      prop.additionalProperties &&
-      typeof prop.additionalProperties === 'object' &&
-      prop.additionalProperties.nullable
-    ) {
-      const recordValueZod = getRecordValueType(zodField);
-      if (recordValueZod) {
-        // z.record(key, value) — check if value type is structurally nullable
-        if (!isStructurallyNullable(recordValueZod)) {
-          delete prop.additionalProperties.nullable;
-        }
-      } else if (isPassthroughObject(zodField)) {
-        // .passthrough() — additionalProperties accepts anything, nullable is spurious
-        delete prop.additionalProperties.nullable;
-      }
-    }
-
-    // Recurse into nested inline objects
-    if (prop.type === 'object' && prop.properties) {
-      const innerZod = unwrapToInner(zodField);
-      if (innerZod) fixSchemaRecursive(innerZod, prop);
-    }
-
-    // Recurse into array items
-    if (prop.type === 'array' && prop.items) {
-      const innerZod = unwrapToArrayElement(zodField);
-      if (innerZod) {
-        if (prop.items.properties) {
-          fixSchemaRecursive(innerZod, prop.items);
-        }
-        if (prop.items.nullable && !isStructurallyNullable(innerZod)) {
-          delete prop.items.nullable;
-        }
-        if (prop.items.format && !prop.items.pattern) {
-          const pattern = extractZodPattern(innerZod);
-          if (pattern) prop.items.pattern = pattern;
-        }
-      }
-    }
-  }
-}
-
-/**
- * Extracts the shape (Record<string, ZodType>) from a Zod object schema.
- * Returns `undefined` for non-object schemas.
- */
-function getZodObjectShape(schema: any): Record<string, any> | undefined {
-  const inner = unwrapToInner(schema);
-  const shape = inner?._zod?.def?.shape ?? inner?.shape;
-  if (shape && typeof shape === 'object') return shape;
-  return undefined;
-}
-
-/**
- * Unwraps Zod modifier wrappers (optional, nullable, default, etc.)
- * to reach the inner schema.
- */
-function unwrapToInner(schema: any): any {
-  let s = schema;
-  const wrappers = new Set([
-    'optional',
-    'nullable',
-    'default',
-    'prefault',
-    'transform',
-    'pipe',
-    'catch',
-    'readonly',
-    'brand',
-    'nonoptional',
-  ]);
-  while (s?._zod?.def) {
-    const type: string | undefined = s._zod.def.type;
-    if (type && wrappers.has(type) && s._zod.def.innerType) {
-      s = s._zod.def.innerType;
-      continue;
-    }
-    break;
-  }
-  return s;
-}
-
-/**
- * Unwraps a Zod schema to find the array element type.
- * Handles `z.array(inner)` and `z.array(inner).optional()` etc.
- */
-function unwrapToArrayElement(schema: any): any {
-  const inner = unwrapToInner(schema);
-  // ZodArray: element is in _zod.def.element or .element
-  return inner?._zod?.def?.element ?? inner?.element ?? undefined;
-}
-
-/**
- * Determines whether a Zod schema is structurally nullable — i.e., explicitly
- * wrapped in `.nullable()` somewhere in its modifier chain.
- */
-/**
- * Extracts the regex pattern from a Zod schema's format checks (e.g. .uuid(), .email()).
- * Zod stores the regex in `_zod.def.checks[].def.pattern` as a RegExp.
- */
-/**
- * Extracts the value type from a Zod record schema (z.record(keyType, valueType)).
- * Unwraps modifiers to reach the ZodRecord, then returns the valueType.
- */
-/**
- * Checks if a Zod schema is an object with `.passthrough()` applied.
- * In Zod 4, `.passthrough()` sets `_zod.def.catchall` or similar flag.
- */
-function isPassthroughObject(schema: any): boolean {
-  const inner = unwrapToInner(schema);
-  if (inner?._zod?.def?.type !== 'object') return false;
-  // Zod 4: .passthrough() sets catchall to z.unknown()
-  // .strict() sets catchall to z.never()
-  // No modifier: catchall is undefined
-  const catchall = inner._zod.def.catchall;
-  const catchallType = catchall?._zod?.def?.type;
-  return catchallType === 'unknown' || catchallType === 'any';
-}
-
-function getRecordValueType(schema: any): any {
-  const inner = unwrapToInner(schema);
-  return inner?._zod?.def?.valueType ?? undefined;
-}
-
-function extractZodPattern(schema: any): string | undefined {
-  const inner = unwrapToInner(schema);
-  const checks: any[] = inner?._zod?.def?.checks ?? [];
-  for (const check of checks) {
-    const pat = check?.def?.pattern;
-    if (pat instanceof RegExp) return pat.source;
-  }
-  return undefined;
-}
-
-function isStructurallyNullable(schema: any): boolean {
-  let s = schema;
-  const passthrough = new Set([
-    'optional',
-    'default',
-    'prefault',
-    'transform',
-    'pipe',
-    'catch',
-    'readonly',
-    'brand',
-    'nonoptional',
-  ]);
-  while (s?._zod?.def) {
-    const type: string | undefined = s._zod.def.type;
-    if (type === 'nullable') return true;
-    if (type && passthrough.has(type) && s._zod.def.innerType) {
-      s = s._zod.def.innerType;
-      continue;
-    }
-    break;
-  }
-  return false;
-}
-
-/**
- * Global pass: strips `additionalProperties: { nullable: true }` from anywhere
- * in the schema tree — including inline union variants, deeply nested objects,
- * and array items that `fixSchemaRecursive` can't reach without a parallel Zod tree.
- *
- * When `additionalProperties` contains ONLY `{ nullable: true }` (no type, no
- * other constraints), it always comes from zod-to-openapi's `safeParse(null)`
- * check on `.passthrough()` / `z.unknown()` values. Stripping `nullable` is
- * safe because `unknown` already includes `null` semantically.
- */
-function stripAdditionalPropsNullable(schemas: Record<string, any>): void {
-  for (const schema of Object.values(schemas)) {
-    walkAndStrip(schema);
-  }
-}
-
-function walkAndStrip(obj: any): void {
-  if (!obj || typeof obj !== 'object') return;
-  if (Array.isArray(obj)) {
-    for (const item of obj) walkAndStrip(item);
-    return;
-  }
-  // Check this object's additionalProperties
-  if (
-    obj.additionalProperties &&
-    typeof obj.additionalProperties === 'object' &&
-    obj.additionalProperties.nullable
-  ) {
-    const keys = Object.keys(obj.additionalProperties);
-    if (keys.length === 1 && keys[0] === 'nullable') {
-      delete obj.additionalProperties.nullable;
-    }
-  }
-  // Recurse into all object values
-  for (const value of Object.values(obj)) {
-    walkAndStrip(value);
-  }
-}
-
-/**
- * Ensure `schema.openapi()` is callable. `extendZodWithOpenApi` patches a single
- * Zod copy's `ZodType.prototype`; a schema built against a *different* Zod copy
- * (ESM vs CJS, or a duplicated transitive dependency) won't inherit it, so calling
- * `.openapi()` during generation throws. Walk to that schema's base prototype and
- * extend it in place. No-op when the schema is already extended.
- */
-function ensureOpenapiExtension(schema: unknown): void {
-  if (!schema || typeof (schema as { openapi?: unknown }).openapi === 'function') {
-    return;
-  }
-  // Climb to the top-most non-Object prototype (the Zod base class prototype);
-  // adding `.openapi` there makes it resolvable for every schema of that copy.
-  let proto = Object.getPrototypeOf(schema);
-  while (
-    proto &&
-    Object.getPrototypeOf(proto) &&
-    Object.getPrototypeOf(proto) !== Object.prototype
-  ) {
-    proto = Object.getPrototypeOf(proto);
-  }
-  if (proto && typeof (proto as { openapi?: unknown }).openapi !== 'function') {
-    try {
-      extendZodWithOpenApi({ ZodType: { prototype: proto } } as never);
-    } catch {
-      // Best-effort — the try/catch around registry.register() is the real safety net.
-    }
-  }
 }

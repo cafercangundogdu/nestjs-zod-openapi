@@ -24,7 +24,7 @@
 pnpm add @cafercangundogdu/nestjs-zod-openapi
 ```
 
-Peer dependencies: `@nestjs/common ^11`, `@nestjs/swagger ^11`, `zod ^4`
+Peer dependencies: `@nestjs/common ^11 || ^12`, `@nestjs/swagger ^11 || ^12`, `zod ^4`
 
 ## Quick start
 
@@ -175,6 +175,66 @@ async create(@Body() body: MessagePartInput) {  // TypeScript type
 }
 ```
 
+## NestJS 12: Standard Schema
+
+NestJS 12 accepts a Standard Schema directly on the parameter decorators — no DTO class needed. Zod 4 schemas are Standard Schemas, so they can be passed as-is:
+
+```typescript
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { ApiOkResponse } from '@nestjs/swagger';
+import { z } from 'zod';
+
+@Controller('users')
+export class UsersController {
+  @Post()
+  @ApiOkResponse({ standardSchema: UserSchema })
+  create(@Body({ schema: CreateUserSchema }) body: z.infer<typeof CreateUserSchema>) {
+    return body;
+  }
+
+  @Get(':id')
+  @ApiOkResponse({ standardSchema: UserSchema })
+  findOne(
+    @Param('id', { schema: z.string().uuid() }) id: string,
+    @Query({ schema: ListUsersSchema }) query: z.infer<typeof ListUsersSchema>,
+  ) {
+    return { id, query };
+  }
+}
+```
+
+`patchNestSwagger()` handles the Swagger side automatically — it injects `createStandardSchemaConverter()` into `SwaggerModule.createDocument()`. `ZodValidationPipe` registered globally validates these parameters too, throwing the same `BadRequestException` as it does for `createZodDto()` classes.
+
+If you don't use the patch, pass the converter yourself:
+
+```typescript
+import { createStandardSchemaConverter } from '@cafercangundogdu/nestjs-zod-openapi';
+
+const document = SwaggerModule.createDocument(app, config, {
+  standardSchemaConverter: createStandardSchemaConverter(),
+});
+```
+
+To keep `@nestjs/swagger`'s built-in conversion instead, opt out:
+
+```typescript
+patchNestSwagger({ standardSchemaConverter: false });
+```
+
+`patchNestSwagger({ standardSchemaConverter: myConverter })` also accepts a custom converter, and a `standardSchemaConverter` passed to `createDocument()` by your app always wins.
+
+What the converter gives you over the built-in conversion:
+
+- `.openapi('Name')` schemas become `components/schemas/Name` referenced by `$ref` (nested named schemas become components too); unnamed schemas are inlined
+- `z.discriminatedUnion()` → `oneOf` with `discriminator`
+- `z.coerce.date()` → `string` / `date-time` (the built-in conversion throws *Date cannot be represented in JSON Schema*)
+- spurious `nullable` on `z.coerce.*` stripped, `format` checks (uuid, email, …) gain their regex `pattern`
+- non-Zod Standard Schemas (Valibot, ArkType, …) fall back to `@nestjs/swagger`'s built-in conversion
+
+> Transforms and pipes are described from their **input** side for both request and response schemas — same limitation as `createZodDto()`.
+
+On `@nestjs/swagger` 11 all of this is inert; nothing changes for NestJS 11 users.
+
 ## API
 
 | Export | Description |
@@ -183,27 +243,66 @@ async create(@Body() body: MessagePartInput) {  // TypeScript type
 | `createZodDto(schema)` | Creates a DTO class from any Zod schema. |
 | `ZodValidationPipe` | NestJS pipe — validates against DTO's Zod schema. |
 | `patchNestSwagger(opts?)` | Patches Swagger to generate schemas from Zod. |
+| `createStandardSchemaConverter()` | `standardSchemaConverter` for `createDocument()` — renders Zod Standard Schemas (NestJS 12). |
 | `isZodDto(value)` | Type guard for ZodDto classes. |
 
 ## Compatibility
 
 | Dependency | Version |
 |------------|---------|
-| `@nestjs/common` | ^11 |
-| `@nestjs/swagger` | ^11 |
+| `@nestjs/common` | ^11 \|\| ^12 |
+| `@nestjs/swagger` | ^11 \|\| ^12 |
 | `zod` | ^4 |
-| `node` | >= 22 |
+| `node` | >= 22.12 |
+
+NestJS 12 ships ESM-only packages. Both the CommonJS and ESM builds of this library work with it unchanged — Node loads the `@nestjs/*` internals through `require(esm)`, so no changes to your app are needed.
 
 ## How it works
 
-`patchNestSwagger()` monkey-patches two `@nestjs/swagger` internals:
+`patchNestSwagger()` monkey-patches `@nestjs/swagger` internals:
 
 - `SchemaObjectFactory.prototype.exploreModelSchema` — routes Zod DTOs through [@asteasolutions/zod-to-openapi](https://github.com/asteasolutions/zod-to-openapi)
-- `SwaggerScanner.prototype.scanApplication` — merges generated schemas into the document
+- `SwaggerScanner.prototype.scanApplication` — merges generated schemas into the document and injects the Standard Schema converter
+- `SchemaObjectFactory.prototype.getSchemaOverride` (`@nestjs/swagger` 12 only) — expands an unnamed `@Query({ schema })` / `@Param({ schema })` whose schema is named with `.openapi('Name')` into individual parameters
 
 `initZodOpenApi(z)` passes **your** Zod instance to `extendZodWithOpenApi()`, avoiding duplicate-package issues in pnpm/monorepo setups.
 
-> Since this relies on `@nestjs/swagger` internals, a major Swagger update may require a corresponding update here. Tested against `@nestjs/swagger ^11`.
+> Since this relies on `@nestjs/swagger` internals, a major Swagger update may require a corresponding update here. Tested against `@nestjs/swagger ^11` and `^12`.
+
+## Development
+
+Requires Node 22+ and pnpm 11 — the `packageManager` field pins the exact version, so `corepack enable` is enough.
+
+```bash
+pnpm install
+pnpm test              # Vitest
+pnpm run test:watch
+pnpm run test:cov
+pnpm run lint          # Biome
+pnpm run typecheck
+pnpm run build         # CJS + ESM
+pnpm run check:package # publint + are-the-types-wrong
+```
+
+CI runs the suite on Node 22/24 × NestJS 11/12 — tests that need NestJS 12 features are skipped on the 11 leg.
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/), enforced by commitlint via a husky hook.
+
+Changelog: [CHANGELOG.md](CHANGELOG.md).
+
+### Releasing
+
+Releases are driven by [release-please](https://github.com/googleapis/release-please). Every push to `main` refreshes a `chore(main): release x.y.z` pull request built from the Conventional Commits since the last tag — `feat` bumps the minor, `fix` the patch, and while the package is below 1.0.0 a `!` / `BREAKING CHANGE` bumps the minor too.
+
+Merging that PR bumps `package.json` and `.release-please-manifest.json`, rewrites `CHANGELOG.md`, and creates the `vX.Y.Z` tag and GitHub release. The publish workflow then runs on that push to `main` and publishes to npm with provenance — it skips versions already on npm, so ordinary merges are no-ops.
+
+One-time bootstrap for 0.2.0 — release-please needs the manifest version to exist as a release before it takes over, so after merging this work create it by hand:
+
+```bash
+gh release create v0.2.0 --title v0.2.0 --notes-file <(sed -n '/^## \[0.2.0\]/,/^## \[/p' CHANGELOG.md)
+```
+
+The npm publish of 0.2.0 happens on its own from the push to `main`. With the default `GITHUB_TOKEN` the release PR runs no CI checks — add a `RELEASE_PLEASE_TOKEN` secret (a PAT with contents + pull-requests write) to fix that.
 
 ## Inspired by
 

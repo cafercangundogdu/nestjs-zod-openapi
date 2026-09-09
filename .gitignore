@@ -4,7 +4,6 @@ coverage/
 *.js
 *.d.ts
 *.js.map
-!jest.config.js
 !commitlint.config.js
 .env
 .DS_Store
