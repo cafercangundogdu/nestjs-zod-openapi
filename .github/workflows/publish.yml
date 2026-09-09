@@ -3,6 +3,7 @@ name: Publish
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: publish
@@ -12,7 +13,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
 
     steps:
@@ -61,9 +62,3 @@ jobs:
       - name: Publish to npm
         if: steps.version-check.outputs.skip != 'true'
         run: npm publish --provenance --access public
-
-      - name: Create GitHub Release
-        if: steps.version-check.outputs.skip != 'true'
-        run: gh release create "v${{ steps.version-check.outputs.version }}" --generate-notes --title "v${{ steps.version-check.outputs.version }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
